@@ -1,0 +1,239 @@
+---
+title: "Part 2 Feature Building"
+output: 
+  html_document: 
+       smart: false
+---
+
+# Libraries
+
+```{r}
+library(data.table)
+library(dplyr)
+```
+
+# Loading the Data
+
+```{r}
+order_products_all <- fread('order_products_all.csv')
+head(order_products_all)
+orders <- fread('orders.csv')
+head(orders)
+```
+
+Creating a day_part variable to group the hours:
+```{r}
+orders[,day_part:='Night']
+orders[(order_hour_of_day>=7 & order_hour_of_day<=14),day_part:='Morning']
+orders[(order_hour_of_day>=15 & order_hour_of_day<=23),day_part:='Evening']
+```
+
+
+Transforming the categorical variables to characters
+
+```{r}
+order_products_all <- order_products_all[,user_id:=as.character(user_id)]
+orders <- orders[,order_dow:=as.character(order_dow)]
+orders <- orders[,order_hour_of_day:=as.character(order_hour_of_day)]
+orders <- orders[,user_id:=as.character(user_id)]
+orders$user_id <- as.character(orders$user_id)
+head(orders)
+```
+
+
+
+
+# Feature Building
+
+## A)  Ordering Patters
+
+### 1. Days between orders
+This indicates how often and/or loyal a particular customer is to this online retailer
+
+```{r}
+# calculate the features
+min_days <- orders[,min(days_since_prior_order,na.rm=TRUE),by=user_id]
+max_days <- orders[,max(days_since_prior_order,na.rm=TRUE),by=user_id]
+med_days <- orders[,median(days_since_prior_order,na.rm=TRUE),by=user_id]
+
+# merge the features
+user_days <- merge(min_days,max_days,by='user_id', all=TRUE)
+user_days <- merge(user_days,med_days, by='user_id',all=TRUE)
+names(user_days)[2:4] <- c('min_days','max_days','med_days')
+
+# delete the original calculations from the workspace
+rm(min_days,max_days,med_days)
+```
+
+### 2) Day of Week 
+The % of Orders for each user_dow combination
+```{r}
+user_dow <- orders[,length(order_id),by=c('user_id','order_dow')]
+names(user_dow)[3] <- "dow_orders"
+user_orders <- orders[,length(order_id),by=c('user_id')]
+names(user_orders)[2] <- "total_orders"
+
+#calculate the percentage
+user_dow <- merge(user_dow,user_orders,by='user_id')
+user_dow <- user_dow[,user_dow_percentage:=dow_orders/total_orders]
+user_dow$dow_orders <- NULL
+user_dow$total_orders <- NULL
+
+# pivot
+user_dow <- dcast(user_dow, user_id ~ order_dow, value.var="user_dow_percentage")
+
+#replace NAs with 0
+user_dow[is.na(user_dow)] <- 0
+
+```
+
+### 2) Day of Week and Day Part
+
+```{r}
+user_dow_day_part <- orders[,length(order_id),by=c('user_id','order_dow','day_part')]
+names(user_dow_day_part)[4] <- "dow_day_part_orders"
+
+#calculate the percentage
+user_dow_day_part <- merge(user_dow_day_part,user_orders,by='user_id')
+user_dow_day_part <- user_dow_day_part[,dow_day_part_percentage:=dow_day_part_orders/total_orders]
+user_dow_day_part$dow_day_part_orders <- NULL
+user_dow_day_part$total_orders <- NULL
+
+user_dow_day_part$dow_dp <- paste(user_dow_day_part$order_dow,user_dow_day_part$day_part,sep="-")
+
+# pivot
+user_dow_day_part <- dcast(user_dow_day_part, user_id ~ dow_dp, value.var="dow_day_part_percentage")
+
+#replace NAs with 0
+user_dow_day_part[is.na(user_dow_day_part)] <- 0
+
+```
+
+### 3) Day Part
+
+
+```{r}
+user_dp <- orders[,length(order_id),by=c('user_id','day_part')]
+names(user_dp)[3] <- "dp_orders"
+
+#calculate the percentage
+user_dp <- merge(user_dp,user_orders,by='user_id')
+user_dp <- user_dp[,user_dp_percentage:=dp_orders/total_orders]
+user_dp$dp_orders <- NULL
+user_dp$total_orders <- NULL
+
+# pivot
+user_dp <- dcast(user_dp, user_id ~ day_part, value.var="user_dp_percentage")
+
+#replace NAs with 0
+user_dp[is.na(user_dp)] <- 0
+
+```
+
+### Merging all ordering patterns
+
+```{r}
+users_order_patters <- merge(user_orders,user_days,by='user_id')
+users_order_patters <- merge(users_order_patters,user_dow,by='user_id')
+users_order_patters <- merge(users_order_patters,user_dp,by='user_id')
+users_order_patters <- merge(users_order_patters,user_dow_day_part,by='user_id')
+
+#clean the workspace
+rm(user_orders,user_days,user_dow,user_dp,user_dow_day_part)
+```
+
+# B) Users Product Patterns
+## 1) Aisles Percentage of Products
+
+```{r}
+user_aisles <- order_products_all[,length(product_id),by=c('user_id','aisle')]
+names(user_aisles)[3] <- "prod_per_aisle"
+user_products <- order_products_all[,length(product_id),by=c('user_id')]
+names(user_products)[2] <- "total_products"
+
+#calculate the percentage
+user_aisles <- merge(user_aisles,user_products,by='user_id')
+user_aisles <- user_aisles[,user_aisles_percentage:=prod_per_aisle/total_products]
+user_aisles$prod_per_aisle <- NULL
+user_aisles$total_products <- NULL
+
+# pivot
+user_aisles <- dcast(user_aisles, user_id ~ aisle, value.var="user_aisles_percentage")
+
+#replace NAs with 0
+user_aisles[is.na(user_aisles)] <- 0
+
+```
+
+
+## 2) Departments Percentage of Products
+
+```{r}
+user_dep <- order_products_all[,length(product_id),by=c('user_id','department')]
+names(user_dep)[3] <- "prod_per_dep"
+
+#calculate the percentage
+user_dep <- merge(user_dep,user_products,by='user_id')
+user_dep <- user_dep[,user_dep_percentage:=prod_per_dep/total_products]
+user_dep$prod_per_dep <- NULL
+user_dep$total_products <- NULL
+
+# pivot
+user_dep <- dcast(user_dep, user_id ~ department, value.var="user_dep_percentage")
+
+#replace NAs with 0
+user_dep[is.na(user_dep)] <- 0
+```
+
+## 3) Document of Words from Product Descriptions
+
+```{r}
+user_words <- order_products_all[,.(user_id,product_id,aisle,department,product_name)]
+user_words <- unique(user_words)
+
+# for each user merge the product description into 1 cell
+#overall level
+user_words_collapsed <- user_words %>% group_by(user_id) %>% summarise(all_words = paste(product_name, collapse=" | "))
+
+#aisle level
+user_aisle_words_coll <- user_words %>% group_by(user_id,aisle) %>% summarise(all_words = paste(product_name, collapse=" | "))
+user_aisle_words_coll <- dcast(user_aisle_words_coll, user_id ~ aisle, value.var="all_words")
+#renaming the columns so that we can distinguish them compared to the percentages
+names(user_aisle_words_coll)[2:length(names(user_aisle_words_coll))] <- paste(names(user_aisle_words_coll)[2:length(names(user_aisle_words_coll))],"_w",sep="")
+
+
+#department level
+user_dep_words_coll <- user_words %>% group_by(user_id,department) %>% summarise(all_words = paste(product_name, collapse=" | "))
+user_dep_words_coll <- dcast(user_dep_words_coll, user_id ~ department, value.var="all_words")
+#renaming the columns so that we can distinguish them compared to the percentages
+names(user_dep_words_coll)[2:length(names(user_dep_words_coll))] <- paste(names(user_dep_words_coll)[2:length(names(user_dep_words_coll))],"_w",sep="")
+head(user_dep_words_coll)
+```
+
+## Merge all the product datasets together
+
+```{r}
+user_product_patterns <- merge(user_aisles,user_dep, by='user_id')
+user_product_patterns <- merge(user_product_patterns,user_words_collapsed, by='user_id')
+user_product_patterns <- merge(user_product_patterns,user_aisle_words_coll, by='user_id')
+user_product_patterns <- merge(user_product_patterns,user_dep_words_coll, by='user_id')
+```
+
+# Merge the product and the ordering patterns together in one masterfile
+
+```{r}
+user_features <- merge(users_order_patters,user_product_patterns,by='user_id')
+```
+
+
+# Save the masterfile but all the individual files separately so that they are easier to work with
+```{r}
+write.csv(user_features, 'user_features.csv')
+write.csv(users_order_patterns, 'users_order_patterns.csv')
+write.csv(user_aisles, 'user_aisles.csv')
+write.csv(user_dep, 'user_dep.csv')
+write.csv(user_words_collapsed, 'user_words_collapsed.csv')
+write.csv(user_aisle_words_coll, 'user_aisle_words_coll.csv')
+write.csv(user_dep_words_coll, 'user_dep_words_coll.csv')
+```
+

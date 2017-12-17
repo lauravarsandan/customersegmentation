@@ -1,0 +1,337 @@
+---
+title: "Part 4 Level 2 Clustering"
+author: "Laura Varsandan"
+date: "17 December 2017"
+output: 
+  html_document: 
+       smart: false
+---
+
+# Libraries
+
+```{r}
+library(data.table)
+library(dplyr)
+library(GGally)
+library(kohonen)
+library(cluster)
+library(ggplot2)
+library(ggfortify)
+library(scales)
+library(reshape2)
+library(tibble)
+library(pvclust)
+library(networkD3)
+library(shiny)
+library(LDAvis)
+library(tm)
+```
+
+At this stage of the analysis, we will create another level of segmtation within each of the 5 clusters derived from the departments shopping patterns. 
+
+We will compare two approaches: One based on the aisles shopping patterns and one based on text resemblance of the product names between customers, treating customers as documents. 
+
+# Loading the data
+
+```{r}
+#the clustering segmentation saved from the Level 1 Segmentation
+user_dep_clustering <- fread('C:/Users/laura.varsandan/Visual Analytics Coursework/user_dep_clustering.csv')
+user_aisles <- fread('C:/Users/laura.varsandan/Visual Analytics Coursework/user_aisles.csv')
+user_words_collapsed <- fread('C:/Users/laura.varsandan/Visual Analytics Coursework/user_words_collapsed.csv')
+
+```
+
+First let's see which how big are our Level 1 clusters:
+```{r}
+table(user_dep_clustering$clusters_5)
+prop.table(table(user_dep_clustering$clusters_5))
+```
+
+
+It looks like Cluster 2 and 3 would benefit most from another level of segmentation since they are the biggest. 
+
+# Cluster 2 Level 2 Segmentation
+
+```{r}
+cluster_2 <- as.data.frame(user_dep_clustering[user_dep_clustering$clusters_5==2,c("user_id")])
+nrow(cluster_2)
+```
+
+## Aisles Traditional Segmentation
+
+```{r}
+cluster_2_aisles <- merge(user_aisles,cluster_2,by="user_id",all.y=TRUE)
+rownames(cluster_2_aisles) <- cluster_2_aisles$user_id
+```
+
+
+### Dimensionality reduction
+
+Since there are 136 aisles, this is a number too high for visualisation and clustering, so the first step would be to reduce the number of aisles to a smaller,meaningful number.
+
+Let's explore what columns should be left in.
+
+What are the mean and variance for each Column?
+
+```{r}
+aisle_means <- as.data.frame(apply(cluster_2_aisles[,3:136],MARGIN=2,FUN=mean))
+aisle_variance <- as.data.frame(apply(cluster_2_aisles[,3:136],MARGIN=2,FUN=var))
+aisle_names <- as.data.frame(names(cluster_2_aisles[,3:136]))
+
+aisle_statistics <-cbind(aisle_names,aisle_means,aisle_variance)
+names(aisle_statistics) <- c("aisle_name","mean","variance")
+```
+
+Let's Visualize them
+
+```{r}
+p <- ggplot(aisle_statistics, aes(x=mean, y=variance,label=aisle_name)) + geom_point()
+p <- p + scale_y_continuous(breaks=seq(0,0.0125,0.0005))
+p <- p + scale_x_continuous(breaks=seq(0,0.20,0.005))
+p_text <- p + geom_text()
+p
+p_text
+#ggplot(aisle_statistics, aes(x=mean, y=variance,label=aisle_name)) + geom_point() + geom_text()
+```
+
+Since we are trying to preserve interpretability for clusters, we will not use a PCA, but instead we will pick the aisles that have a distiguishable mean and variance.In this case, let's take the ones that have a mean > 0.010 I.e. more than 1% of the content of baskets represent products from that particular aisle OR a variance > 0.0005, as that could increase the chances of it being a distinguishable aisle between customers. 
+
+```{r}
+meanigful_aisles <- aisle_statistics[aisle_statistics$mean>0.010 | aisle_statistics$variance > 0.0005,]
+p <- ggplot(meanigful_aisles, aes(x=mean, y=variance,label=aisle_name)) + geom_point()
+#p <- p + scale_y_continuous(breaks=seq(0,0.0125,0.0005))
+#p <- p + scale_x_continuous(breaks=seq(0,0.20,0.005))
+p_text <- p + geom_text()
+p
+p_text
+```
+
+Let's take the unmeaningful aisles out of the dataset
+
+```{r}
+names <- c("user_id",as.character(meanigful_aisles$aisle_name))
+cluster_2_aisles <- select(cluster_2_aisles,names)
+```
+
+
+Let's see how many natural groups we could have
+
+```{r}
+for (i in 1:19){
+  cl2_clara <- clara(cluster_2_aisles[,2:21],i,metric="euclidean",samples=100)
+  sil <- cl2_clara$silinfo$avg.width
+  if (i==1){
+  sil_data <- sil
+  } else {sil_data <- c(sil_data,sil)}
+}
+
+sil_data <- as.data.frame(sil_data)
+sil_data$clusters <-1:18
+
+plot(sil_data$clusters,sil_data$sil_data)
+
+```
+
+So either 2 or 3 clusters could be the right answer. Let's see how it would look with both. 
+
+#### 2 Clusters:
+
+```{r}
+cl2_clara <- clara(cluster_2_aisles[,2:21],2,metric="euclidean",samples=1000)
+
+plot(cl2_clara)
+```
+
+This doesn't look like a very good clustering. Let's follow the previous approach and group customers into 100 groups first and then apply another set of groupings. 
+
+```{r}
+cl2_clara_100 <- clara(cluster_2_aisles[,2:21],100,metric="euclidean",samples=1000)
+
+cl2_100_groups <- as.data.frame(cl2_clara_100$medoids)
+
+cluster_2_aisles$segment_100 <- cl2_clara_100$clustering
+
+```
+
+Let's plot these on a PCP
+
+```{r}
+ggparcoord(data = cl2_100_groups,
+                scale = "uniminmax", boxplot = TRUE, title = "Parallel Coord. Plot of Cluster 2")
+```
+
+Let's see how many natural groups we can find here:
+
+```{r}
+for (i in 1:19){
+  cl2_clara_100 <- clara(cl2_100_groups,i,metric="euclidean",samples=100)
+  sil <- cl2_clara_100$silinfo$avg.width
+  if (i==1){
+  sil_data <- sil
+  } else {sil_data <- c(sil_data,sil)}
+}
+
+sil_data <- as.data.frame(sil_data)
+sil_data$clusters <-1:18
+
+plot(sil_data$clusters,sil_data$sil_data)
+```
+
+
+It still looks like 2 groups is the right answer. 
+
+```{r}
+cl2_clara_100 <- clara(cl2_100_groups,2,metric="euclidean",samples=100)
+
+```
+
+```{r}
+cl2_100_groups$clara_clusters <- as.factor(cl2_clara_100$clustering)
+
+cl2_100_groups_pcp <- ggparcoord(data = cl2_100_groups, columns=1:20, groupColumn = 21, order = "anyClass")
+cl2_100_groups_pcp
+```
+
+We can see that there are some ailes where the two groups clealy separate and others on which they overlapp. 
+
+Let's see these results on a radar chart
+
+```{r}
+clara_2_groups_medoids <- as.data.frame(cl2_clara_100$medoids)
+clara_2_groups_medoids$clusters <-as.character(1:2)
+
+melt <- melt(clara_2_groups_medoids,id=c("clusters"))
+
+melt %>%
+ ggplot(aes(x=variable, y=value, group=clusters, color=clusters)) + 
+ geom_polygon(fill=NA) + 
+ coord_polar() + theme_bw() +
+ #scale_x_discrete(labels = abbreviate) + 
+ theme(axis.text.x = element_text(size = 10))
+```
+
+Let's see how a hierarchical clustering would perform. 
+
+```{r}
+d <- dist(cl2_100_groups[,1:20], method = "euclidean") # distance matrix
+fit <- hclust(d, method="ward") 
+plot(fit) # display dendogram
+groups <- cutree(fit, k=3) # cut tree into 5 clusters
+# draw dendogram with red borders around the 5 clusters 
+plot(fit) + rect.hclust(fit, k=3, border="red")
+```
+
+The hierarchical clustering seems to suggest that there could be 3 clusters or even 6. This is a better outcome since the consumer group is quite large. 
+
+Let's see how the 3 clusters look like.
+
+```{r}
+groups_3 <- cutree(fit, k=3)
+cl2_100_groups$hc_clusters_3 <- groups_3
+
+#calculating averages for each cluster
+hc_clust_3_groups_avg <- aggregate(cl2_100_groups[,1:20],list(cl2_100_groups$hc_clusters_3),mean)
+hc_clust_3_groups_avg$Group.1 <- NULL
+hc_clust_3_groups_avg$id <- row.names(hc_clust_3_groups_avg)
+hc_clust_3_groups_avg$group <- as.character("HC Clusters 3")
+head(hc_clust_3_groups_avg)
+```
+
+```{r}
+melt <- melt(hc_clust_3_groups_avg[,1:21],id=c("id"))
+
+melt %>%
+ ggplot(aes(x=variable, y=value, group=id, color=id)) + 
+ geom_polygon(fill=NA) + 
+ coord_polar() + theme_bw() +
+ #scale_x_discrete(labels = abbreviate) + 
+ theme(axis.text.x = element_text(size = 10))
+```
+
+Let's also see with 6 clusters
+
+```{r}
+groups_6 <- cutree(fit, k=6)
+cl2_100_groups$hc_clusters_6 <- groups_6
+
+#calculating averages for each cluster
+hc_clust_6_groups_avg <- aggregate(cl2_100_groups[,1:20],list(cl2_100_groups$hc_clusters_6),mean)
+hc_clust_6_groups_avg$Group.1 <- NULL
+hc_clust_6_groups_avg$id <- row.names(hc_clust_6_groups_avg)
+hc_clust_6_groups_avg$group <- as.character("HC Clusters 6")
+head(hc_clust_6_groups_avg)
+```
+```{r}
+melt <- melt(hc_clust_6_groups_avg[,1:21],id=c("id"))
+
+melt %>%
+ ggplot(aes(x=variable, y=value, group=id, color=id)) + 
+ geom_polygon(fill=NA) + 
+ coord_polar() + theme_bw() +
+ #scale_x_discrete(labels = abbreviate) + 
+ theme(axis.text.x = element_text(size = 10))
+```
+
+Since the 6 takes into account more patterns let's leave it at 6 and join it to the cluster_2 customers
+
+```{r}
+cl2_100_groups$group100 <- 1:100
+cl_2_hc_clustering <- cl2_100_groups[,c("group100","hc_clusters_6")]
+
+#join to raw data
+cluster_2_aisles <- merge(cluster_2_aisles,cl_2_hc_clustering, by.x="segment_100",by.y="group100")
+```
+
+Let's create a spider diagram for the raw data as well
+
+```{r}
+cluster_2_aisles$hc_clusters_6 <- as.factor(cluster_2_aisles$hc_clusters_6)
+#calculating averages for each cluster
+hc_clust_6_groups_avg <- aggregate(cluster_2_aisles[,3:22],list(cluster_2_aisles$hc_clusters_6),mean)
+hc_clust_6_groups_avg$Group.1 <- NULL
+hc_clust_6_groups_avg$id <- row.names(hc_clust_6_groups_avg)
+hc_clust_6_groups_avg$group <- as.character("HC Clusters 6")
+head(hc_clust_6_groups_avg)
+```
+```{r}
+melt <- melt(hc_clust_6_groups_avg[,1:21],id=c("id"))
+
+melt %>%
+ ggplot(aes(x=variable, y=value, group=id, color=id)) + 
+ geom_polygon(fill=NA) + 
+ coord_polar() + theme_bw() +
+ #scale_x_discrete(labels = abbreviate) + 
+ theme(axis.text.x = element_text(size = 10))
+```
+
+### Words Clustering
+
+```{r}
+cluster_2_words <- merge(user_words_collapsed,cluster_2,by="user_id",all.y=TRUE)
+rownames(cluster_2_words) <- cluster_2_words$user_id
+cluster_2_words$V1 <- NULL
+head(cluster_2_words)
+```
+
+#### Pre - processing the data
+
+Cleaning the Text
+```{r}
+cluster_2_words$all_words <- gsub("'", "", cluster_2_words$all_words)  # remove apostrophes
+cluster_2_words$all_words <- gsub("[[:punct:]]", " ", cluster_2_words$all_words)  # replace punctuation with space
+cluster_2_words$all_words <- gsub("[[:cntrl:]]", " ", cluster_2_words$all_words)  # replace control characters with space
+cluster_2_words$all_words <- gsub("^[[:space:]]+", "", cluster_2_words$all_words) # remove whitespace at beginning of documents
+cluster_2_words$all_words <- gsub("[[:space:]]+$", "", cluster_2_words$all_words) # remove whitespace at end of documents
+cluster_2_words$all_words <- tolower(cluster_2_words$all_words)  # force to lowercase
+```
+
+Tokenizing
+```{r}
+doc.list <- cluster_2_words$all_words
+names(doc.list) <- cluster_2_words$user_id
+doc.list <- strsplit(doc.list, "[[:space:]]+")
+doc.list[1]
+```
+
+
+

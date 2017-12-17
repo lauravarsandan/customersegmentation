@@ -1,0 +1,634 @@
+---
+title: "Part 3 EDA and Clustering"
+output: 
+  html_document: 
+       smart: false
+---
+
+# Libraries
+
+```{r}
+library(data.table)
+library(dplyr)
+library(GGally)
+library(kohonen)
+library(cluster)
+library(ggplot2)
+library(ggfortify)
+library(scales)
+library(reshape2)
+library(tibble)
+library(pvclust)
+library(networkD3)
+
+```
+
+# Loading the Data
+
+```{r}
+user_features <- fread('user_features.csv')
+users_order_patterns <- fread('users_order_patters.csv')
+user_aisles <- fread('user_aisles.csv')
+user_dep <- fread('user_dep.csv')
+user_words_collapsed <- fread('user_words_collapsed.csv')
+user_aisle_words_coll <- fread( 'user_aisle_words_coll.csv')
+user_dep_words_coll <- fread('user_dep_words_coll.csv')
+```
+
+# Exploratory Data Analysis
+
+## 1) Ordering Patterns
+How many orders has each customer ordered?
+
+```{r}
+hist(users_order_patterns$total_orders)
+```
+
+### Loyalty
+
+From this it would appear that some customers are definitely more loyal than others, but we do not know if this is because of how much data we were sent. So let's investigate the intervals between orders as well. 
+
+Let's try a scatterplot matrix, which is usually how numerical variables are analysed (reference)
+
+```{r}
+ggpairs(users_order_patterns, columns = 3:6, title = "",  
+  axisLabels = "show", columnLabels = colnames(users_order_patterns[,3:6]))
+```
+
+med_days and total_orders do seem to have an inverse relationship. The more orders a customer has places, the lower the interval between orders. Let's take a closer look at the scatterplot between these two variables. 
+
+```{r}
+ggplot(users_order_patterns, aes(x=med_days, y=total_orders)) +
+    geom_point(shape=1) +    # Use hollow circles
+    geom_smooth()
+```
+
+We can see from this that there is a group of customers which are highly loyal as they placed more than 50 orders, usually in up to 7 days intervals. Therefore, these two variables could be useful in the segmentation process to identify loyal groups of customers which might share the same philosophy and who the company should focus on with their marketing and their products. 
+
+
+
+### Day of Week and Day Part
+
+Let's now check when customers place their orders  - what day of week and what what day part. 
+
+For this we are going to use parallel coordinate plots in order to see the profile for each customer. 
+
+We need to sample the data so that the graphs can be readable
+```{r}
+set.seed(123)
+
+samp <- users_order_patterns[sample(nrow(users_order_patterns),100),c(2,17:37)]
+
+ggparcoord(data = samp, columns = c(2:22),
+                scale = "uniminmax", boxplot = TRUE, title = "Parallel Coord. Plot of Day of Week and Day Part")
+
+```
+```{r}
+set.seed(123)
+
+samp <- users_order_patterns[sample(nrow(users_order_patterns),100),c(7:13)]
+
+ggparcoord(data = samp,
+                scale = "uniminmax", boxplot = TRUE, title = "Parallel Coord. Plot of Day of Week")
+
+```
+
+
+```{r}
+set.seed(123)
+
+samp <- users_order_patterns[sample(nrow(users_order_patterns),100),c(14:16)]
+
+ggparcoord(data = samp,
+                scale = "uniminmax", boxplot = TRUE, title = "Parallel Coord. Plot of Day of Week")
+
+```
+
+From this one we can see that there could be groups having a stong perference for morning, a strong preference for evening or a more even split between the two, with only very few customers ordering at night (0-7am). This could be an interesting feature which could be determined on the lifestyles people have. 
+
+Since is is more difficult to distinguish any preference for the days of the week, we will leave those out for now.
+
+Therefore, the ordering features we will use in the segmentation process are med_days, total_orders, Morning, Evening and Night. 
+
+
+### Clustering on Ordering Patterns
+
+Let's use Self Organizing Maps to understand how many groups of customers we could have for the ordering patterns. 
+
+First, let's extract a sample
+
+```{r}
+som_samp <- users_order_patterns[sample(nrow(users_order_patterns),1000),c('med_days','total_orders','Morning','Evening','Night')]
+som_samp$med_days <- as.numeric(som_samp$med_days)
+som_samp$total_orders <- as.numeric(som_samp$total_orders)
+som_samp_scaled <- scale(som_samp) #the variables have different scales, so we need to standardize them
+sample_matrix <- som_samp_scaled
+sample_matrix <- as.matrix(sample_matrix)
+```
+
+
+
+```{r}
+som_grid <- somgrid(xdim = 50, ydim=20, topo="hexagonal")
+som_model <- som(sample_matrix, 
+		grid=som_grid, 
+		rlen=1000, 
+		alpha=c(0.05,0.01), 
+		keep.data = TRUE)
+plot(som_model, type="codes")
+```
+
+Let's also see the colourscales for each variable (Nevermind - throws an error)
+```{r}
+#med_days
+  plot(som_model, type = "property", property=som_samp[,c('med_days')], main="Med Days")
+```
+
+
+There are definitely some well defined groups in there.Since the data points that we need to cluster is very large, the typical hierarchical clustering in R cannot support it. Hence we will use clara, a pam clustering technique adjusted to be able to tolerate a large data volume. [Insert reference on why pam is suitable]
+
+
+#### PAM/Clara
+
+```{r}
+#separate our variables from the rest of the dataset
+uop_unscaled <- users_order_patterns[,c("med_days","total_orders","Morning","Evening","Night")]
+#scale them
+uop <- scale(uop_unscaled)
+
+```
+
+Apply the clustering
+
+```{r}
+for (i in 1:20){
+  uop_clara <- clara(uop,i,metric="euclidean",samples=100)
+  sil <- uop_clara$silinfo$avg.width
+  if (i==1){
+  sil_data <- sil
+  } else {sil_data <- c(sil_data,sil)}
+}
+
+sil_data <- as.data.frame(sil_data)
+sil_data$clusters <-1:19
+
+plot(sil_data$clusters,sil_data$sil_data)
+
+```
+
+The highest average silhouette would be for 1 or 4 clusters. However, the silhouette width is generally a low number, indicating that clustering solely on these variables does not give rise to clearly defined clusters. 
+
+Let's check how the 4 cluster plot looks like
+
+```{r}
+uop_clara <- clara(uop,4,metric="euclidean",samples=100)
+plot(uop_clara)
+```
+
+Let's understand the values of the medoids
+
+```{r}
+uop_clara$i.med
+
+uop_unscaled[uop_clara$i.med,]
+
+med_unscaled <- unscale(as.data.frame(uop_clara$medoids))
+
+```
+
+
+Let's plot these points 
+```{r}
+autoplot(uop_clara,loadings = TRUE, loadings.colour = 'blue',
+         loadings.label = TRUE, loadings.label.size = 3)
+```
+
+
+From this we can see that althouth there is some overlap between segments there are some distinguishable ordering patterns between them. 
+
+How many customers do we have in each cluster?
+
+```{r}
+uop_clusters <- as.data.frame(uop_clara$clustering)
+prop.table(table(uop_clusters))
+```
+
+Let's see this by visualizing the centroids on a spider diagram
+
+```{r}
+med_unscaled$cluster <- as.character(1:4)
+
+med_unscaled_melt <- melt(med_unscaled,id=c("cluster"))
+
+med_unscaled_melt %>%
+ ggplot(aes(x=variable, y=value, group=cluster, color=cluster)) + 
+ geom_polygon(fill=NA) + 
+ coord_polar() + theme_bw() +
+ #scale_x_discrete(labels = abbreviate) + 
+ theme(axis.text.x = element_text(size = 10))
+```
+
+# 2) EDA and clustering of Department Shopping patterns
+
+### EDA
+
+Since we have a lot of variables, and a lot of rows, I will reduce the dataset for visualization purposes. 
+
+I will group the customers into 1000 segments which we will then explore visually. 
+
+
+```{r}
+
+```
+
+
+
+scatterled plots to see of there are any relationships between departments
+```{r}
+ggpairs(user_dep, columns = 3:23, title = "",  
+  axisLabels = "show", columnLabels = colnames(user_dep[,3:23]))
+```
+
+There seem to be some distinct groups that buy bulk, dry goods pasta, international and other. In terms of the varibles with the most variable behaviour, they seem to be beverages, dairy eggs, pantry, product and snack. 
+
+correlation matrix
+
+```{r}
+dept_cor_m <- ggcorr(user_dep[,3:23], palette="RdBu", label=TRUE)
+dept_cor_m
+```
+
+The highest negative correlation is between produce and beverages. Let's see how the scatterplot between these two variables looks like. 
+
+```{r}
+ggplot(user_dep, aes(x=produce, y=beverages)) +
+    geom_point(shape=1) 
+```
+
+Let's cluster the points into 100 segments and plot the parallel coordinate plots on those. 
+
+```{r}
+# We don't need to scale as they are all in percentages
+user_dep_m <- as.data.frame(user_dep[,3:23])
+dept_100_seg_clara <- clara(user_dep_m,100,metric="euclidean",samples=200)
+dept_100_medoids <- as.data.frame(dept_100_seg_clara$medoids)
+dept_coor_plot <- ggparcoord(data = dept_100_medoids,
+                scale = "uniminmax", boxplot = TRUE, title = "Parallel Coord. Plot of Department Purchasing Patterns")
+dept_coor_plot
+```
+
+
+Let's try to apply another layer on clustering and then color this pcp
+
+How Many Natural Groups are there?
+a) Applied on the medoids
+```{r}
+for (i in 1:20){
+  dep100_clara <- clara(dept_100_medoids,i,metric="euclidean",samples=100)
+  sil <- dep100_clara$silinfo$avg.width
+  if (i==1){
+  sil_data <- sil
+  } else {sil_data <- c(sil_data,sil)}
+}
+
+sil_data <- as.data.frame(sil_data)
+sil_data$clusters <-1:19
+
+plot(sil_data$clusters,sil_data$sil_data)
+```
+```{r}
+
+dep100_clara <- clara(dept_100_medoids,4,metric="euclidean",samples=100)
+dept_100_medoids$clusters <- as.factor(as.character(dep100_clara$clustering))
+dept_coor_plot <- ggparcoord(data = dept_100_medoids, columns=1:21, groupColumn = 22, order = "anyClass")
+dept_coor_plot
+
+dep100_clara$clustering
+
+dep_clus_4_groups <- as.data.frame(dep100_clara$medoids)
+dep_clus_4_groups$clusters <- as.factor(1:4)
+
+dep_clus_4_groups_pcp <- ggparcoord(data = dep_clus_4_groups, columns=1:21, groupColumn = 22, order = "anyClass")
+dep_clus_4_groups_pcp
+```
+
+```{r}
+med_4_unscaled_melt <- melt(dep_clus_4_groups,id=c("clusters"))
+
+med_4_unscaled_melt %>%
+ ggplot(aes(x=variable, y=value, group=clusters, color=clusters)) + 
+ geom_polygon(fill=NA) + 
+ coord_polar() + theme_bw() +
+ #scale_x_discrete(labels = abbreviate) + 
+ theme(axis.text.x = element_text(size = 10))
+```
+
+
+b) applied on the raw data
+
+```{r}
+for (i in 1:20){
+  dep_clara <- clara(user_dep_m,i,metric="euclidean",samples=100)
+  sil <- dep_clara$silinfo$avg.width
+  if (i==1){
+  sil_data <- sil
+  } else {sil_data <- c(sil_data,sil)}
+}
+
+sil_data <- as.data.frame(sil_data)
+sil_data$clusters <-1:19
+
+plot(sil_data$clusters,sil_data$sil_data)
+```
+
+## Hoierarchical Clustering
+Let's also try to do hierarchical clustering on the 100 medoids. 
+
+First let's see how close together the columns are:
+
+```{r}
+fit <- pvclust(dept_100_medoids[1:21], method.hclust="ward",
+   method.dist="euclidean")
+plot(fit) # dendogram with p values
+# add rectangles around groups highly supported by the data
+pvrect(fit, alpha=.95)
+```
+
+Now let's see the points
+
+```{r}
+d <- dist(dept_100_medoids[1:21], method = "euclidean") # distance matrix
+fit <- hclust(d, method="ward") 
+plot(fit) # display dendogram
+groups <- cutree(fit, k=4) # cut tree into 5 clusters
+# draw dendogram with red borders around the 5 clusters 
+plot(fit) + rect.hclust(fit, k=4, border="red")
+```
+
+The dendogram also aggrees with the fact that the most ideal number of clusters that leads to the most separation is 4. 
+
+Let's cut the tree to 4 clusters and then compare the clustering with the clara algorithm. 
+
+```{r}
+hc_clusters <- cutree(fit, k=4)
+clara_clusters <- dept_100_medoids$clusters
+dept_100_medoids$hc_clusters<-hc_clusters
+dept_100_medoids$group_id <- 1:100
+
+table(clara_clusters)
+```
+
+Use a sankey chart to compare the results from the 2 clusters
+
+```{r}
+nodes = data.frame("name" = 
+ c("Cluster 1a", # Node 0
+ "Cluster 2a", # Node 1
+ "Cluster 3a", # Node 2
+ "Cluster 4a",
+ "Cluster 1b", # Node 0
+ "Cluster 2b", # Node 1
+ "Cluster 3b", # Node 2
+ "Cluster 4b"))# Node 3
+
+links = dept_100_medoids[,c("clusters","hc_clusters","group_id")]
+
+ #0, 1, 10, # Each row represents a link. The first number
+ #0, 2, 20, # represents the node being conntected from. 
+ #1, 3, 30, # the second number represents the node connected to.
+ #2, 3, 40),# The third number is the value of the node
+ 
+names(links) = c("source", "target", "value")
+links$source <- as.numeric(as.character(links$source))
+links$target <- as.numeric(links$target)
+links$value <- as.numeric(links$value)
+
+table(links$source)
+table(links$target)
+#Indexing the Source and Targets to 0
+links$source <- links$source -1 
+links$target <- links$target -1 + 4
+
+
+sankeyNetwork(Links = links, Nodes = nodes,
+ Source = "source", Target = "target",
+ Value = "value", NodeID = "name",
+ fontSize= 12, nodeWidth = 30)
+```
+
+Let's compare the points that are changing with the cluster characteristics. 
+
+The cluster characteristics for the clara clustering are the medoids. 
+
+```{r}
+clara_4_medoids <- as.data.frame(dep100_clara$medoids)
+clara_4_medoids$id <- row.names(clara_4_medoids)
+clara_4_medoids$group <- as.character("Clara Clusters")
+head(clara_4_medoids)
+```
+
+The cluster characteristics for the hierarchical clustering will be the averages for each variable in each cluster
+
+```{r}
+
+hc_clust_4_groups_avg <- aggregate(dept_100_medoids[,1:21],list(dept_100_medoids$hc_clusters),mean)
+hc_clust_4_groups_avg$Group.1 <- NULL
+hc_clust_4_groups_avg$id <- row.names(hc_clust_4_groups_avg)
+hc_clust_4_groups_avg$group <- as.character("HC Clusters")
+head(hc_clust_4_groups_avg)
+```
+
+Let's now take the points that are changing:
+#### 1) Cluster 2 to CLuster 3 
+
+```{r}
+clus2_to_3 <- dept_100_medoids[dept_100_medoids$clusters==2 & dept_100_medoids$hc_clusters==3,]
+
+clus2_to_3$clusters <- NULL
+clus2_to_3$hc_clusters <- NULL
+names(clus2_to_3)[22] <- "id"
+clus2_to_3$group <-as.character("Segments Changing from Cluster 2 to Cluster 3")
+head(clus2_to_3)
+```
+
+Let's add Clara Cluster 2 and HC Cluster 2 to the dataframe so that we can plot it into a PCP
+
+```{r}
+clus2_to_3 <- rbind(clus2_to_3,clara_4_medoids[clara_4_medoids$id==2,],hc_clust_4_groups_avg[hc_clust_4_groups_avg$id==3,])
+clus2_to_3$group <- as.factor(clus2_to_3$group)
+clus2_to_3
+```
+
+PCP Plot
+
+```{r}
+
+clus2_to_3_pcp <- ggparcoord(data = clus2_to_3, columns=1:21, groupColumn = 23, order = "anyClass")
+clus2_to_3_pcp
+```
+
+For this one, although there isn't a clear winner, the Clara Cluster seems to match the patterns a bit better. 
+
+#### 2) Cluster 3 to CLuster 1 
+
+```{r}
+clus3_to_1 <- dept_100_medoids[dept_100_medoids$clusters==3 & dept_100_medoids$hc_clusters==1,]
+
+clus3_to_1$clusters <- NULL
+clus3_to_1$hc_clusters <- NULL
+names(clus3_to_1)[22] <- "id"
+clus3_to_1$group <-as.character("Segments Changing from Cluster 3 to Cluster 1")
+head(clus3_to_1)
+```
+
+Let's add Clara Cluster 3 and HC Cluster 1 to the dataframe so that we can plot it into a PCP
+
+```{r}
+clus3_to_1 <- rbind(clus3_to_1,clara_4_medoids[clara_4_medoids$id==3,],hc_clust_4_groups_avg[hc_clust_4_groups_avg$id==1,])
+clus3_to_1$group <- as.factor(clus3_to_1$group)
+clus3_to_1
+```
+PCP Plot
+
+```{r}
+
+clus3_to_1_pcp <- ggparcoord(data = clus3_to_1, columns=1:21, groupColumn = 23, order = "anyClass")
+clus3_to_1_pcp
+```
+
+
+#### 3) Cluster 3 to CLuster 4
+
+```{r}
+clus3_to_4 <- dept_100_medoids[dept_100_medoids$clusters==3 & dept_100_medoids$hc_clusters==4,]
+
+clus3_to_4$clusters <- NULL
+clus3_to_4$hc_clusters <- NULL
+names(clus3_to_4)[22] <- "id"
+clus3_to_4$group <-as.character("Segments Changing from Cluster 3 to Cluster 4")
+head(clus3_to_4)
+```
+
+Let's add Clara Cluster 3 and HC Cluster 4 to the dataframe so that we can plot it into a PCP
+
+```{r}
+clus3_to_4 <- rbind(clus3_to_4,clara_4_medoids[clara_4_medoids$id==3,],hc_clust_4_groups_avg[hc_clust_4_groups_avg$id==4,])
+clus3_to_4$group <- as.factor(clus3_to_4$group)
+clus3_to_4
+```
+
+```{r}
+
+clus3_to_4_pcp <- ggparcoord(data = clus3_to_4, columns=1:21, groupColumn = 23, order = "anyClass")
+clus3_to_4_pcp
+```
+
+
+#### 3) Cluster 4 to CLuster 3
+
+```{r}
+clus4_to_3 <- dept_100_medoids[dept_100_medoids$clusters==4 & dept_100_medoids$hc_clusters==3,]
+
+clus4_to_3$clusters <- NULL
+clus4_to_3$hc_clusters <- NULL
+names(clus4_to_3)[22] <- "id"
+clus4_to_3$group <-as.character("Segments Changing from Cluster 4 to Cluster 3")
+head(clus4_to_3)
+```
+Let's add Clara Cluster 4 and HC Cluster 3 to the dataframe so that we can plot it into a PCP
+
+```{r}
+clus4_to_3 <- rbind(clus4_to_3,clara_4_medoids[clara_4_medoids$id==4,],hc_clust_4_groups_avg[hc_clust_4_groups_avg$id==3,])
+clus4_to_3$group <- as.factor(clus4_to_3$group)
+clus4_to_3
+```
+
+```{r}
+
+clus4_to_3_pcp <- ggparcoord(data = clus4_to_3, columns=1:21, groupColumn = 23, order = "anyClass")
+clus4_to_3_pcp
+```
+
+#### 3) Cluster 4 to CLuster 1
+
+```{r}
+clus4_to_1 <- dept_100_medoids[dept_100_medoids$clusters==4 & dept_100_medoids$hc_clusters==1,]
+
+clus4_to_1$clusters <- NULL
+clus4_to_1$hc_clusters <- NULL
+names(clus4_to_1)[22] <- "id"
+clus4_to_1$group <-as.character("Segments Changing from Cluster 4 to Cluster 3")
+head(clus4_to_1)
+```
+```{r}
+clus4_to_1 <- rbind(clus4_to_1,clara_4_medoids[clara_4_medoids$id==4,],hc_clust_4_groups_avg[hc_clust_4_groups_avg$id==1,])
+clus4_to_1$group <- as.factor(clus4_to_1$group)
+clus4_to_1
+```
+
+```{r}
+
+clus4_to_1_pcp <- ggparcoord(data = clus4_to_1, columns=1:21, groupColumn = 23, order = "anyClass")
+clus4_to_1_pcp
+```
+
+The segmentation at majority level works, only 12% of points do not fit the clusters and since it is not clear which clustering algorithm would be best, I will group them into a fifth cluster called 'Other' and further refine it at the next level of the segmentation
+
+```{r}
+dept_100_medoids$clusters_final <- as.character(dept_100_medoids$clusters)
+
+dept_100_medoids[dept_100_medoids$clusters==2 & dept_100_medoids$hc_clusters==3,"clusters_final"] <- "5"
+dept_100_medoids[dept_100_medoids$clusters==3 & dept_100_medoids$hc_clusters==1,"clusters_final"] <- "5"
+dept_100_medoids[dept_100_medoids$clusters==3 & dept_100_medoids$hc_clusters==4,"clusters_final"] <- "5"
+dept_100_medoids[dept_100_medoids$clusters==4 & dept_100_medoids$hc_clusters==3,"clusters_final"] <- "5"
+dept_100_medoids[dept_100_medoids$clusters==4 & dept_100_medoids$hc_clusters==1,"clusters_final"] <- "5"
+
+```
+
+
+
+Let's link the 5 clusters to the raw data 
+
+```{r}
+user_dep_clustering <- user_dep
+user_dep_clustering$cluster_100 <- as.factor(dept_100_seg_clara$clustering)
+
+cluster_100_to_5_mapping <- as.data.frame(dept_100_medoids$clusters_final)
+cluster_100_to_5_mapping$cluster_100 <- as.factor(1:100)
+
+names(cluster_100_to_5_mapping)[1] <- "clusters_5"
+
+user_dep_clustering <- merge(user_dep_clustering,cluster_100_to_5_mapping, by="cluster_100")
+user_dep_clustering$V1 <- NULL
+```
+
+Let's see the average values for each cluster-variable
+
+```{r}
+user_dep_clustering_agg <- aggregate(user_dep_clustering[,3:23],list(user_dep_clustering$clusters_5),mean)
+names(user_dep_clustering_agg)[1] <-"cluster"
+
+raw_data_5_melt <- melt(user_dep_clustering_agg,id=c("cluster"))
+
+raw_data_5_melt %>%
+ ggplot(aes(x=variable, y=value, group=cluster, color=cluster)) + 
+ geom_polygon(fill=NA) + 
+ coord_polar() + theme_bw() +
+ #scale_x_discrete(labels = abbreviate) + 
+ theme(axis.text.x = element_text(size = 10))
+
+```
+
+
+This resembles the medoids spider diagram. 
+
+Let's save the results
+
+```{r}
+write.csv(user_dep_clustering,"user_dep_clustering.csv")
+```
+
+
+
+
+
