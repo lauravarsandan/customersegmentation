@@ -26,6 +26,7 @@ library(shiny)
 library(LDAvis)
 library(tm)
 library(lda)
+library(tidytext)
 ```
 
 At this stage of the analysis, we will create another level of segmtation within each of the 5 clusters derived from the departments shopping patterns. 
@@ -49,7 +50,7 @@ prop.table(table(user_dep_clustering$clusters_5))
 ```
 
 
-It looks like Cluster 2 and 3 would benefit most from another level of segmentation since they are the biggest. 
+It looks like Cluster 2 and 3 would benefit most from another level of segmentation since they are the biggest. We also need to further segment cluster 5 as it contains customers which didn't fit into the other clusters. 
 
 # Cluster 2 Level 2 Segmentation
 
@@ -303,6 +304,14 @@ melt %>%
  coord_polar() + theme_bw() +
  #scale_x_discrete(labels = abbreviate) + 
  theme(axis.text.x = element_text(size = 10))
+
+
+melt %>%
+ ggplot(aes(x=variable, y=value, group=id, color=id)) + 
+ geom_line() + 
+ coord_polar() + theme_bw() +
+ #scale_x_discrete(labels = abbreviate) + 
+ theme(axis.text.x = element_text(size = 10))
 ```
 
 ### Words Clustering
@@ -311,6 +320,9 @@ melt %>%
 cluster_2_words <- merge(user_words_collapsed,cluster_2,by="user_id",all.y=TRUE)
 rownames(cluster_2_words) <- cluster_2_words$user_id
 cluster_2_words$V1 <- NULL
+cluster_2_words$user_id <- as.numeric(cluster_2_words$user_id)
+cluster_2_words <- cluster_2_words[order(cluster_2_words$user_id),]
+cluster_2_words$user_id <- as.character(cluster_2_words$user_id)
 head(cluster_2_words)
 ```
 
@@ -419,8 +431,682 @@ stage[1,2]
 
 Give that we lose the gluten free grup, we will remain with 4 main groups. 
 
+#### Extracting the topics for each customer
+
+```{r}
+head(theta)
+nrow(theta)
+doc_topcs <- as.data.frame(theta)
+doc_topcs$doc_no <- 1:nrow(theta)
+names(doc_topcs) <- c("T1","T2","T3","T4","doc_no")
+doc_topcs$user_id <- cluster_2_words$user_id
+rownames(doc_topcs) <- doc_topcs$user_id
+nrow(doc_topcs)
+```
+
+Since there are some customers that may belong to 2 topics, we will not extract the dominant topic, but we will cluster the customers according to these 4 topics. 
+
+Since we have a large number of data points, we will use clara and then hierarchical clustering.
+
+Let's see how many natural groups we have
+
+```{r}
+topic_matrix <- scale(doc_topcs[,1:4])
+
+for (i in 1:19){
+  cl2_clara_words <- clara(topic_matrix,i,metric="euclidean",samples=100)
+  sil <- cl2_clara_words$silinfo$avg.width
+  if (i==1){
+  sil_data <- sil
+  } else {sil_data <- c(sil_data,sil)}
+}
+
+sil_data <- as.data.frame(sil_data)
+sil_data$clusters <-1:18
+
+plot(sil_data$clusters,sil_data$sil_data)
+```
+
+The highest score is for 15 clusters, but there are only 4 topics, so if we choose 15 clusters we risk loosing interpretability. Let's therefore choose 7 clusters. 
+
+
+```{r}
+cl2_clara_words <- clara(topic_matrix,7,metric="euclidean",samples=100)
+doc_topcs$clusters <- cl2_clara_words$clustering
+doc_topcs$user_id <- as.character(doc_topcs$user_id)
+```
+
+Let's see how this clustering compares to the aisles patterns. 
+
+```{r}
+cluster_2_aisles_m <- merge(cluster_2_aisles,doc_topcs, by="user_id")
+head(cluster_2_aisles_m)
+
+```
+
+Create the sankey chart
+
+```{r}
+nodes = data.frame("name" = 
+ c("Cluster 1a", # Node 0
+ "Cluster 2a", # Node 1
+ "Cluster 3a", # Node 2
+ "Cluster 4a",
+ "Cluster 5a",
+ "Cluster 6a",
+ "Cluster 1b", # Node 0
+ "Cluster 2b", # Node 1
+ "Cluster 3b", # Node 2
+ "Cluster 4b",
+ "Cluster 5b",
+ "Cluster 6b",
+ "Cluster 7b"))# Node 3
+
+links = cluster_2_aisles_m[,c("hc_clusters_6","clusters","user_id")]
+
+ #0, 1, 10, # Each row represents a link. The first number
+ #0, 2, 20, # represents the node being conntected from. 
+ #1, 3, 30, # the second number represents the node connected to.
+ #2, 3, 40),# The third number is the value of the node
+ 
+names(links) = c("source", "target", "value")
+links$source <- as.numeric(as.character(links$source))
+links$target <- as.numeric(links$target)
+links$value <- as.numeric(links$value)
+
+table(links$source)
+table(links$target)
+#Indexing the Source and Targets to 0
+links$source <- links$source -1 
+links$target <- links$target -1 + 6
+
+
+sankeyNetwork(Links = links, Nodes = nodes,
+ Source = "source", Target = "target",
+ Value = "value", NodeID = "name",
+ fontSize= 12, nodeWidth = 30)
+```
+
+We can see that the two types of clustering have led to the same number of clusters, but the membership of those clusters is completely different. 
+
+Let's compare the interpretability of these two clustering methods. 
+
+For the hierarchical clusters, we have the spider diagrams
+
+For the LDA clusters, we will calculate the most frequent terms for each cluster.
+
+```{r}
+cluster_2_words_c <- merge(cluster_2_words,doc_topcs, by="user_id")
+cluster_2_words_c <- cluster_2_words_c[,c("clusters","all_words")]
+cluster_2_words_c <- cluster_2_words_c %>% group_by(clusters) %>% summarise(all_words = paste(all_words, collapse=" | "))
+```
+
+Processing the text data in order to calculate tf-idf of words for each cluster
+
+```{r}
+
+book_words <- cluster_2_words_c %>%
+  unnest_tokens(word, all_words) %>%
+  count(clusters, word, sort = TRUE) %>%
+  ungroup()
+
+total_words <- book_words %>% 
+  group_by(clusters) %>% 
+  summarize(total = sum(n))
+
+book_words <- left_join(book_words, total_words)
+
+book_words <- book_words %>%
+  bind_tf_idf(word, clusters, n)
+
+
+head(book_words)
+```
+
+
+HeatMap on tf
+
+```{r}
+book_words <- book_words[order(-book_words$tf),]
+for (i in 1:max(book_words$clusters)){
+  cl <- book_words[book_words$clusters==i,]
+  cl <- cl[1:20,]
+  cl <- cl[order(-cl$tf),]
+  if (i==1){cl_all <- cl}
+  else {cl_all <-rbind(cl_all,cl)}
+}
+
+cl_all$word <- factor(cl_all$word, levels=rev(unique(cl_all$word)))
+cl_all$clusters <- factor(cl_all$clusters, levels=unique(cl_all$clusters))
+
+p <- ggplot(cl_all, aes(word, clusters)) +
+  geom_tile(aes(fill = tf),colour = "lightblue") +
+  scale_fill_gradient(low = "lightblue",high = "darkblue")+
+  coord_flip()
+p
 
 
 
+```
+
+HeatMap on tf-idf
+
+```{r}
+book_words <- book_words[order(-book_words$tf_idf),]
+for (i in 1:max(book_words$clusters)){
+  cl <- book_words[book_words$clusters==i,]
+  cl <- cl[1:15,]
+  cl <- cl[order(-cl$tf_idf),]
+  if (i==1){cl_all <- cl}
+  else {cl_all <-rbind(cl_all,cl)}
+}
+
+cl_all$word <- factor(cl_all$word, levels=rev(unique(cl_all$word)))
+cl_all$clusters <- factor(cl_all$clusters, levels=unique(cl_all$clusters))
+
+p <- ggplot(cl_all, aes(word, clusters)) +
+  geom_tile(aes(fill = tf_idf),colour = "lightblue") +
+  scale_fill_gradient(low = "lightblue",high = "darkblue")+
+  coord_flip()
+p
+
+
+
+```
+
+Let's visualize the terms with the top tf-idf
+
+```{r}
+book_words %>%
+  arrange(desc(tf_idf)) %>%
+  mutate(word = factor(word, levels = rev(unique(word)))) %>% 
+  group_by(clusters) %>% 
+  top_n(10) %>% 
+  ungroup %>%
+  ggplot(aes(word, tf_idf, fill = clusters)) +
+  geom_col(show.legend = FALSE) +
+  labs(x = NULL, y = "tf_idf") +
+  facet_wrap(~clusters, ncol = 2, scales = "free") +
+  coord_flip()
+```
+
+We can see that these clusters, although they might look like they overlap much more, they also give a much better insight into the preferences for the types of products customers prefer the most and could therefore inform product choices a lot better. 
+
+Let's proceed with the text mining clustering for the rest of the clusters as well. 
+```{r}
+write.csv(cluster_2_aisles_m, "cluster_2_level_2_final_clusters.csv")
+```
+
+
+# Cluster 3 Level 2 Segmentation
+
+```{r}
+cluster_3 <- as.data.frame(user_dep_clustering[user_dep_clustering$clusters_5==3,c("user_id")])
+nrow(cluster_3)
+```
+
+## Words Clustering
+
+```{r}
+cluster_3_words <- merge(user_words_collapsed,cluster_3,by="user_id",all.y=TRUE)
+rownames(cluster_3_words) <- cluster_3_words$user_id
+cluster_3_words$V1 <- NULL
+cluster_3_words$user_id <- as.numeric(cluster_3_words$user_id)
+cluster_3_words <- cluster_3_words[order(cluster_3_words$user_id),]
+cluster_3_words$user_id <- as.character(cluster_3_words$user_id)
+head(cluster_3_words)
+```
+
+
+#### Pre - processing the data
+
+Cleaning the Text
+```{r}
+cluster_3_words$all_words <- gsub("'", "", cluster_3_words$all_words)  # remove apostrophes
+cluster_3_words$all_words <- gsub("[[:punct:]]", " ", cluster_3_words$all_words)  # replace punctuation with space
+cluster_3_words$all_words <- gsub("[[:cntrl:]]", " ", cluster_3_words$all_words)  # replace control characters with space
+cluster_3_words$all_words <- gsub("^[[:space:]]+", "", cluster_3_words$all_words) # remove whitespace at beginning of documents
+cluster_3_words$all_words <- gsub("[[:space:]]+$", "", cluster_3_words$all_words) # remove whitespace at end of documents
+cluster_3_words$all_words <- tolower(cluster_3_words$all_words)  # force to lowercase
+```
+
+Tokenizing
+```{r}
+doc.list <- cluster_3_words$all_words
+names(doc.list) <- cluster_3_words$user_id
+doc.list <- strsplit(doc.list, "[[:space:]]+")
+```
+
+```{r}
+# compute the table of terms:
+term.table <- table(unlist(doc.list))
+term.table <- sort(term.table, decreasing = TRUE)
+vocab <- names(term.table)
+
+# now put the documents into the format required by the lda package:
+get.terms <- function(x) {
+  index <- match(x, vocab)
+  index <- index[!is.na(index)]
+  rbind(as.integer(index - 1), as.integer(rep(1, length(index))))
+}
+documents <- lapply(doc.list, get.terms)
+```
+
+
+```{r}
+# Compute some statistics related to the data set:
+D <- length(documents)  # number of documents (2,000)
+W <- length(vocab)  # number of terms in the vocab (14,568)
+doc.length <- sapply(documents, function(x) sum(x[2, ]))  # number of tokens per document [312, 288, 170, 436, 291, ...]
+N <- sum(doc.length)  # total number of tokens in the data (546,827)
+term.frequency <- as.integer(term.table)  # frequencies of terms in the corpus [8939, 5544, 2411, 2410, 2143, ...]
+
+```
+
+Applying the LDA Model
+```{r}
+# MCMC and model tuning parameters:
+K <- 5
+G <- 500
+alpha <- 0.02
+eta <- 0.02
+
+# Fit the model:
+set.seed(357)
+t1 <- Sys.time()
+fit <- lda.collapsed.gibbs.sampler(documents = documents, K = K, vocab = vocab, 
+                                   num.iterations = G, alpha = alpha, 
+                                   eta = eta, initial = NULL, burnin = 0,
+                                   compute.log.likelihood = TRUE)
+t2 <- Sys.time()
+t2 - t1  # about 24 minutes on laptop
+```
+
+Vizualising the model 
+
+```{r}
+theta <- t(apply(fit$document_sums + alpha, 2, function(x) x/sum(x)))
+phi <- t(apply(t(fit$topics) + eta, 2, function(x) x/sum(x)))
+```
+
+
+
+```{r}
+Cluster2_ProductTopics <- list(phi = phi,
+                     theta = theta,
+                     doc.length = doc.length,
+                     vocab = vocab,
+                     term.frequency = term.frequency)
+```
+
+```{r}
+#create the JSON object to feed the visualization:
+json <- createJSON(phi = Cluster2_ProductTopics$phi, 
+                   theta = Cluster2_ProductTopics$theta, 
+                   doc.length = Cluster2_ProductTopics$doc.length, 
+                   vocab = Cluster2_ProductTopics$vocab, 
+                   term.frequency = Cluster2_ProductTopics$term.frequency)
+```
+
+```{r}
+serVis(json, out.dir = 'vis', open.browser = TRUE)
+```
+
+
+#### Extracting the topics for each customer
+
+```{r}
+head(theta)
+nrow(theta)
+doc_topcs <- as.data.frame(theta)
+doc_topcs$doc_no <- 1:nrow(theta)
+names(doc_topcs) <- c("T1","T2","T3","T4","T5","doc_no")
+doc_topcs$user_id <- cluster_3_words$user_id
+rownames(doc_topcs) <- doc_topcs$user_id
+nrow(doc_topcs)
+```
+
+Since there are some customers that may belong to 2 topics, we will not extract the dominant topic, but we will cluster the customers according to these 5 topics. 
+
+Since we have a large number of data points, we will use clara.
+
+Let's see how many natural groups we have
+
+```{r}
+topic_matrix <- doc_topcs[,1:5]
+topic_matrix <- scale(topic_matrix)
+
+for (i in 1:19){
+  cl3_clara_words <- clara(topic_matrix,i,metric="euclidean",samples=100)
+  sil <- cl3_clara_words$silinfo$avg.width
+  if (i==1){
+  sil_data <- sil
+  } else {sil_data <- c(sil_data,sil)}
+}
+
+sil_data <- as.data.frame(sil_data)
+sil_data$clusters <-1:18
+
+plot(sil_data$clusters,sil_data$sil_data)
+```
+
+
+Let's first see how the words look with 11 clusters then 4
+
+```{r}
+cl3_clara_words <- clara(topic_matrix,4,metric="euclidean",samples=100)
+doc_topcs$clusters <- cl3_clara_words$clustering
+cluster_3_words_m <- merge(cluster_3_words, doc_topcs, by="user_id")
+cluster_3_words_c <- cluster_3_words_m[,c("clusters","all_words")]
+cluster_3_words_c <- cluster_3_words_c %>% group_by(clusters) %>% summarise(all_words = paste(all_words, collapse=" | "))
+```
+
+Let's see what words are the most relevant for each cluster. 
+
+```{r}
+
+book_words <- cluster_3_words_c %>%
+  unnest_tokens(word, all_words) %>%
+  count(clusters, word, sort = TRUE) %>%
+  ungroup()
+
+total_words <- book_words %>% 
+  group_by(clusters) %>% 
+  summarize(total = sum(n))
+
+book_words <- left_join(book_words, total_words)
+
+book_words <- book_words %>%
+  bind_tf_idf(word, clusters, n)
+
+
+head(book_words)
+
+
+```
+HeatMap on tf
+
+```{r}
+book_words <- book_words[order(-book_words$tf),]
+for (i in 1:max(book_words$clusters)){
+  cl <- book_words[book_words$clusters==i,]
+  cl <- cl[1:20,]
+  cl <- cl[order(-cl$tf),]
+  if (i==1){cl_all <- cl}
+  else {cl_all <-rbind(cl_all,cl)}
+}
+
+cl_all$word <- factor(cl_all$word, levels=rev(unique(cl_all$word)))
+cl_all$clusters <- factor(cl_all$clusters, levels=unique(cl_all$clusters))
+
+p <- ggplot(cl_all, aes(word, clusters)) +
+  geom_tile(aes(fill = tf),colour = "lightblue") +
+  scale_fill_gradient(low = "lightblue",high = "darkblue")+
+  coord_flip()
+p
+
+
+
+```
+
+HeatMap on tf-idf
+
+```{r}
+book_words <- book_words[order(-book_words$tf_idf),]
+for (i in 1:max(book_words$clusters)){
+  cl <- book_words[book_words$clusters==i,]
+  cl <- cl[1:15,]
+  cl <- cl[order(-cl$tf_idf),]
+  if (i==1){cl_all <- cl}
+  else {cl_all <-rbind(cl_all,cl)}
+}
+
+cl_all$word <- factor(cl_all$word, levels=rev(unique(cl_all$word)))
+cl_all$clusters <- factor(cl_all$clusters, levels=unique(cl_all$clusters))
+
+p <- ggplot(cl_all, aes(word, clusters)) +
+  geom_tile(aes(fill = tf_idf),colour = "lightblue") +
+  scale_fill_gradient(low = "lightblue",high = "darkblue")+
+  coord_flip()
+p
+
+
+
+```
+
+
+
+
+
+Let's save the results
+
+```{r}
+write.csv(cluster_3_words_m,"cluster_3_level_2_final_clusters.csv")
+```
+
+
+# Cluster 5 Level 2 Segmentation
+
+```{r}
+cluster_5 <- as.data.frame(user_dep_clustering[user_dep_clustering$clusters_5==5,c("user_id")])
+nrow(cluster_5)
+```
+
+## Words Clustering
+
+```{r}
+cluster_5_words <- merge(user_words_collapsed,cluster_5,by="user_id",all.y=TRUE)
+rownames(cluster_5_words) <- cluster_5_words$user_id
+cluster_5_words$V1 <- NULL
+cluster_5_words$user_id <- as.numeric(cluster_5_words$user_id)
+cluster_5_words <- cluster_5_words[order(cluster_5_words$user_id),]
+cluster_5_words$user_id <- as.character(cluster_5_words$user_id)
+head(cluster_5_words)
+```
+
+#### Pre - processing the data
+
+Cleaning the Text
+```{r}
+cluster_5_words$all_words <- gsub("'", "", cluster_5_words$all_words)  # remove apostrophes
+cluster_5_words$all_words <- gsub("[[:punct:]]", " ", cluster_5_words$all_words)  # replace punctuation with space
+cluster_5_words$all_words <- gsub("[[:cntrl:]]", " ", cluster_5_words$all_words)  # replace control characters with space
+cluster_5_words$all_words <- gsub("^[[:space:]]+", "", cluster_5_words$all_words) # remove whitespace at beginning of documents
+cluster_5_words$all_words <- gsub("[[:space:]]+$", "", cluster_5_words$all_words) # remove whitespace at end of documents
+cluster_5_words$all_words <- tolower(cluster_5_words$all_words)  # force to lowercase
+```
+
+Tokenizing
+```{r}
+doc.list <- cluster_5_words$all_words
+names(doc.list) <- cluster_5_words$user_id
+doc.list <- strsplit(doc.list, "[[:space:]]+")
+```
+
+```{r}
+# compute the table of terms:
+term.table <- table(unlist(doc.list))
+term.table <- sort(term.table, decreasing = TRUE)
+vocab <- names(term.table)
+
+# now put the documents into the format required by the lda package:
+get.terms <- function(x) {
+  index <- match(x, vocab)
+  index <- index[!is.na(index)]
+  rbind(as.integer(index - 1), as.integer(rep(1, length(index))))
+}
+documents <- lapply(doc.list, get.terms)
+```
+
+
+```{r}
+# Compute some statistics related to the data set:
+D <- length(documents)  # number of documents (2,000)
+W <- length(vocab)  # number of terms in the vocab (14,568)
+doc.length <- sapply(documents, function(x) sum(x[2, ]))  # number of tokens per document [312, 288, 170, 436, 291, ...]
+N <- sum(doc.length)  # total number of tokens in the data (546,827)
+term.frequency <- as.integer(term.table)  # frequencies of terms in the corpus [8939, 5544, 2411, 2410, 2143, ...]
+
+```
+
+Applying the LDA Model
+```{r}
+# MCMC and model tuning parameters:
+K <- 5
+G <- 500
+alpha <- 0.02
+eta <- 0.02
+
+# Fit the model:
+set.seed(357)
+t1 <- Sys.time()
+fit <- lda.collapsed.gibbs.sampler(documents = documents, K = K, vocab = vocab, 
+                                   num.iterations = G, alpha = alpha, 
+                                   eta = eta, initial = NULL, burnin = 0,
+                                   compute.log.likelihood = TRUE)
+t2 <- Sys.time()
+t2 - t1  # about 24 minutes on laptop
+```
+
+Vizualising the model 
+
+```{r}
+theta <- t(apply(fit$document_sums + alpha, 2, function(x) x/sum(x)))
+phi <- t(apply(t(fit$topics) + eta, 2, function(x) x/sum(x)))
+```
+
+
+
+```{r}
+Cluster2_ProductTopics <- list(phi = phi,
+                     theta = theta,
+                     doc.length = doc.length,
+                     vocab = vocab,
+                     term.frequency = term.frequency)
+```
+
+```{r}
+#create the JSON object to feed the visualization:
+json <- createJSON(phi = Cluster2_ProductTopics$phi, 
+                   theta = Cluster2_ProductTopics$theta, 
+                   doc.length = Cluster2_ProductTopics$doc.length, 
+                   vocab = Cluster2_ProductTopics$vocab, 
+                   term.frequency = Cluster2_ProductTopics$term.frequency)
+```
+
+```{r}
+serVis(json, out.dir = 'vis', open.browser = TRUE)
+```
+#### Extracting the topics for each customer
+
+```{r}
+head(theta)
+nrow(theta)
+doc_topcs <- as.data.frame(theta)
+doc_topcs$doc_no <- 1:nrow(theta)
+names(doc_topcs) <- c("T1","T2","T3","T4","T5","doc_no")
+doc_topcs$user_id <- cluster_5_words$user_id
+rownames(doc_topcs) <- doc_topcs$user_id
+nrow(doc_topcs)
+```
+
+Since there are some customers that may belong to 2 topics, we will not extract the dominant topic, but we will cluster the customers according to these 5 topics. 
+
+Since we have a large number of data points, we will use clara.
+
+Let's see how many natural groups we have
+
+```{r}
+topic_matrix <- doc_topcs[,1:5]
+topic_matrix <- scale(topic_matrix)
+
+for (i in 1:19){
+  cl5_clara_words <- clara(topic_matrix,i,metric="euclidean",samples=100)
+  sil <- cl5_clara_words$silinfo$avg.width
+  if (i==1){
+  sil_data <- sil
+  } else {sil_data <- c(sil_data,sil)}
+}
+
+sil_data <- as.data.frame(sil_data)
+sil_data$clusters <-1:18
+
+plot(sil_data$clusters,sil_data$sil_data)
+```
+
+```{r}
+cl5_clara_words <- clara(topic_matrix,5,metric="euclidean",samples=100)
+doc_topcs$clusters <- cl5_clara_words$clustering
+cluster_5_words_m <- merge(cluster_5_words, doc_topcs, by="user_id")
+cluster_5_words_c <- cluster_5_words_m[,c("clusters","all_words")]
+cluster_5_words_c <- cluster_5_words_c %>% group_by(clusters) %>% summarise(all_words = paste(all_words, collapse=" | "))
+```
+
+Let's see what words are the most relevant for each cluster. 
+
+```{r}
+
+book_words <- cluster_5_words_c %>%
+  unnest_tokens(word, all_words) %>%
+  count(clusters, word, sort = TRUE) %>%
+  ungroup()
+
+total_words <- book_words %>% 
+  group_by(clusters) %>% 
+  summarize(total = sum(n))
+
+book_words <- left_join(book_words, total_words)
+
+book_words <- book_words %>%
+  bind_tf_idf(word, clusters, n)
+
+
+head(book_words)
+
+
+```
+
+Order desc on tf
+
+```{r}
+book_words <- book_words[order(-book_words$tf),]
+for (i in 1:max(book_words$clusters)){
+  cl <- book_words[book_words$clusters==i,]
+  cl <- cl[1:15,]
+  cl <- cl[order(-cl$tf),]
+  if (i==1){cl_all <- cl}
+  else {cl_all <-rbind(cl_all,cl)}
+}
+
+cl_all$word <- factor(cl_all$word, levels=rev(unique(cl_all$word)))
+
+p <- ggplot(cl_all, aes(word, tf, fill = clusters)) +
+  geom_col(show.legend = FALSE) +
+  labs(x = NULL, y = "tf") +
+  facet_wrap(~clusters, ncol = 2, scales = "free") +
+  coord_flip()
+p
+
+```
+
+
+
+
+
+Let's visualize the terms with the top tf-idf
+
+```{r}
+book_words %>%
+  arrange(desc(tf)) %>%
+  mutate(word = factor(word, levels = rev(unique(word))) %>% 
+  group_by(clusters) %>% 
+  top_n(10) %>% 
+  ungroup %>%
+  ggplot(aes(word, tf, fill = clusters)) +
+  geom_col(show.legend = FALSE) +
+  labs(x = NULL, y = "tf") +
+  facet_wrap(~clusters, ncol = 2, scales = "free") +
+  coord_flip()
+```
 
 
