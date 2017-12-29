@@ -41,7 +41,11 @@ user_dep_words_coll <- fread('user_dep_words_coll.csv')
 How many orders has each customer ordered?
 
 ```{r}
-hist(users_order_patterns$total_orders)
+ggplot(users_order_patterns, aes(total_orders)) +
+  geom_histogram()+
+  xlab("Total Orders")+
+  ylab("Number of Users")
+hist(users_order_patterns$total_orders) + xlab("Total Orders")
 ```
 
 ### Loyalty
@@ -58,9 +62,11 @@ ggpairs(users_order_patterns, columns = 3:6, title = "",
 med_days and total_orders do seem to have an inverse relationship. The more orders a customer has places, the lower the interval between orders. Let's take a closer look at the scatterplot between these two variables. 
 
 ```{r}
-ggplot(users_order_patterns, aes(x=med_days, y=total_orders)) +
+ggplot(users_order_patterns, aes(x=total_orders, y=med_days)) +
     geom_point(shape=1) +    # Use hollow circles
-    geom_smooth()
+    geom_smooth()+
+    xlab("Total Orders")+
+    ylab("Median Days between Orders")
 ```
 
 We can see from this that there is a group of customers which are highly loyal as they placed more than 50 orders, usually in up to 7 days intervals. Therefore, these two variables could be useful in the segmentation process to identify loyal groups of customers which might share the same philosophy and who the company should focus on with their marketing and their products. 
@@ -100,7 +106,7 @@ set.seed(123)
 samp <- users_order_patterns[sample(nrow(users_order_patterns),100),c(14:16)]
 
 ggparcoord(data = samp,
-                scale = "uniminmax", boxplot = TRUE, title = "Parallel Coord. Plot of Day of Week")
+                scale = "uniminmax", boxplot = TRUE, title = "Parallel Coord. Plot of Time of Day")
 
 ```
 
@@ -228,6 +234,18 @@ med_unscaled_melt %>%
  theme(axis.text.x = element_text(size = 10))
 ```
 
+Let's save the results
+
+```{r}
+users_order_patterns$uop_clusters <- uop_clara$clustering
+write.csv(users_order_patterns, "users_order_patterns_clusters.csv")
+```
+
+
+
+
+
+
 # 2) EDA and clustering of Department Shopping patterns
 
 ### EDA
@@ -296,6 +314,7 @@ sil_data$clusters <-1:19
 
 plot(sil_data$clusters,sil_data$sil_data)
 ```
+
 ```{r}
 
 dep100_clara <- clara(dept_100_medoids,4,metric="euclidean",samples=100)

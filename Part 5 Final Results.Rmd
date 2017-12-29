@@ -1,0 +1,111 @@
+---
+title: "Part 5 Final Results"
+author: "Laura Varsandan"
+date: "29 December 2017"
+output: 
+  html_document: 
+       smart: false
+---
+# Libraries
+
+```{r}
+library(data.table)
+library(GGally)
+library(ggplot2)
+
+```
+
+# Load the Clustering data
+
+```{r}
+# products patterns segmentation
+cl1 <- fread('C:/Users/laura.varsandan/Visual Analytics Coursework/Level 2 Segmentation/cluster_1_level_2_final_clusters.csv')
+cl2 <- fread('C:/Users/laura.varsandan/Visual Analytics Coursework/Level 2 Segmentation/cluster_2_level_2_final_clusters.csv')
+cl3 <- fread('C:/Users/laura.varsandan/Visual Analytics Coursework/Level 2 Segmentation/cluster_3_level_2_final_clusters.csv')
+cl4 <- fread('C:/Users/laura.varsandan/Visual Analytics Coursework/Level 2 Segmentation/cluster_3_level_2_final_clusters.csv')
+cl5 <- fread('C:/Users/laura.varsandan/Visual Analytics Coursework/Level 2 Segmentation/cluster_5_level_2_final_clusters.csv')
+
+# ordering patterns segmentation
+uop <- fread('C:/Users/laura.varsandan/Visual Analytics Coursework/users_order_patterns_clusters.csv')
+uop <- uop[,c("user_id","uop_clusters")]
+```
+
+
+Just Extract the user id's and the cluster label
+```{r}
+# create the labels
+cl1$pp_clusters <- paste("Cluster 1",cl1$clusters, sep=" - ")
+cl2$pp_clusters <- paste("Cluster 2",cl2$clusters, sep=" - ")
+cl3$pp_clusters <- paste("Cluster 3",cl3$clusters, sep=" - ")
+cl4$pp_clusters <- paste("Cluster 4",cl4$clusters, sep=" - ")
+cl5$pp_clusters <- paste("Cluster 5",cl5$clusters, sep=" - ")
+
+# extract
+cl1_f <- cl1[,c("user_id","pp_clusters")]
+cl2_f <- cl2[,c("user_id","pp_clusters")]
+cl3_f <- cl3[,c("user_id","pp_clusters")]
+cl4_f <- cl4[,c("user_id","pp_clusters")]
+cl5_f <- cl5[,c("user_id","pp_clusters")]
+
+#merge
+pp <- rbind(cl1_f,cl2_f,cl3_f,cl4_f,cl5_f)
+```
+
+# check where the duplicates are
+
+```{r}
+length(unique(cl1$user_id))
+length(cl1$user_id)
+
+length(unique(cl2$user_id))
+length(cl2$user_id)
+
+length(unique(cl3$user_id))
+length(cl3$user_id)
+
+length(unique(cl4$user_id))
+length(cl4$user_id)
+
+length(unique(cl5$user_id))
+length(cl5$user_id)
+```
+
+So it looks like more information was supplied for product patterns than ordering patterns. 
+
+```{r}
+merged <- merge(pp,uop, by="user_id")
+```
+
+Let's count the distinct number of users in each pp_uop group
+
+```{r}
+merged_agg <- aggregate(user_id ~ uop_clusters + pp_clusters, data=merged, FUN=length)
+names(merged_agg)[3] <- "no_users"
+
+# transform to factors for plotting
+merged_agg <- merged_agg[order(merged_agg$uop_clusters,merged_agg$pp_clusters),]
+merged_agg$uop_clusters <- factor(merged_agg$uop_clusters, levels=unique(merged_agg$uop_clusters))
+merged_agg$pp_clusters <- factor(merged_agg$pp_clusters, levels=unique(merged_agg$pp_clusters))
+
+write.csv(merged_agg,"merged_agg.csv", row.names=FALSE)
+```
+
+Plotting the groups
+
+```{r}
+p <- ggplot(merged_agg, aes(uop_clusters, pp_clusters)) +
+  geom_tile(aes(fill=no_users)) +
+  scale_fill_gradient(low = "lightblue",high = "blue")+
+  xlab("Ordering Patterns Segments") +
+  ylab("Product Patterns Segments")+
+  geom_text(aes(label=no_users))
+
+p
+```
+
+
+
+
+
+
+
